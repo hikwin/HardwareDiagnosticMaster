@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  通常不需要将编译后的 build 和 dist 提交到版本控制中
+#  但是可以保留 .spec 文件
+/build/
+/dist/
+
+# Test files and local outputs
+test_nvme_smart_output.json
+电脑配置检测报告.html
+
+# IDEs and editors
+.venv/
+venv/
+ENV/
+env/
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
