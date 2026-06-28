@@ -948,6 +948,98 @@ def _get_sata_speed_helper(drive_id):
 
 
 # ==============================================================================
+# GPU VRAM Helpers (workaround for WMI AdapterRAM 32-bit overflow)
+# ==============================================================================
+
+def _query_gpu_vram_nvidia_smi():
+    """
+    Queries nvidia-smi for accurate VRAM sizes for NVIDIA GPUs.
+    Returns a dict mapping GPU name (lowercase) -> VRAM in bytes.
+    """
+    vram_map = {}
+    try:
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='ignore',
+            creationflags=0x08000000  # CREATE_NO_WINDOW
+        )
+        for line in res.stdout.strip().splitlines():
+            line = line.strip()
+            if line and "," in line:
+                parts = line.split(",", 1)
+                if len(parts) == 2:
+                    gpu_name = parts[0].strip()
+                    mem_mb_str = parts[1].strip()
+                    try:
+                        mem_mb = int(mem_mb_str)
+                        vram_map[gpu_name.lower()] = mem_mb * 1024 * 1024  # MB -> bytes
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    return vram_map
+
+
+def _query_gpu_vram_registry():
+    """
+    Reads the 64-bit HardwareInformation.qwMemorySize from the Windows registry
+    for each display adapter. This avoids the WMI 32-bit AdapterRAM overflow.
+    Returns a dict mapping GPU name (lowercase) -> VRAM in bytes.
+    """
+    import winreg
+    vram_map = {}
+    try:
+        base_key = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base_key) as class_key:
+            i = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(class_key, i)
+                    i += 1
+                    # Only look at numbered subkeys like "0000", "0001", etc.
+                    if not subkey_name.isdigit():
+                        continue
+                    with winreg.OpenKey(class_key, subkey_name) as dev_key:
+                        try:
+                            desc, _ = winreg.QueryValueEx(dev_key, "DriverDesc")
+                        except FileNotFoundError:
+                            desc = None
+                        if not desc:
+                            continue
+                        # Try 64-bit qwMemorySize first, then 32-bit MemorySize
+                        vram_bytes = None
+                        try:
+                            val, reg_type = winreg.QueryValueEx(dev_key, "HardwareInformation.qwMemorySize")
+                            if isinstance(val, int) and val > 0:
+                                vram_bytes = val
+                            elif isinstance(val, bytes) and len(val) >= 8:
+                                import struct
+                                vram_bytes = struct.unpack_from("<Q", val)[0]
+                        except FileNotFoundError:
+                            pass
+                        if vram_bytes is None:
+                            try:
+                                val, reg_type = winreg.QueryValueEx(dev_key, "HardwareInformation.MemorySize")
+                                if isinstance(val, int) and val > 0:
+                                    vram_bytes = val
+                                elif isinstance(val, bytes) and len(val) >= 4:
+                                    import struct
+                                    vram_bytes = struct.unpack_from("<I", val)[0]
+                            except FileNotFoundError:
+                                pass
+                        if vram_bytes and vram_bytes > 0:
+                            vram_map[desc.strip().lower()] = vram_bytes
+                except OSError:
+                    break
+    except Exception:
+        pass
+    return vram_map
+
+
+# ==============================================================================
 # Hardware Scanner Core
 # ==============================================================================
 
@@ -1021,7 +1113,8 @@ class HardwareScanner:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                errors='ignore'
+                errors='ignore',
+                creationflags=0x08000000  # CREATE_NO_WINDOW
             )
             out = res.stdout.strip()
             if not out:
@@ -1073,6 +1166,11 @@ class HardwareScanner:
         gpu_list = normalize_list(raw.get("gpu"))
         gpus = []
         
+        # Pre-fetch accurate VRAM sizes from nvidia-smi and registry
+        # These sources provide correct 64-bit values, unlike WMI AdapterRAM (32-bit overflow)
+        nvidia_vram = _query_gpu_vram_nvidia_smi()
+        registry_vram = _query_gpu_vram_registry()
+        
         # Keywords to identify and exclude virtual/remote display drivers
         virtual_keywords = [
             "virtual", "mirror", "todesk", "oray", "splashtop", 
@@ -1082,27 +1180,52 @@ class HardwareScanner:
         
         for g in gpu_list:
             name = g.get("Name", "未知显卡").strip()
+            name_lower = name.lower()
             
             # Check virtual keywords
             is_virt = False
             for kw in virtual_keywords:
-                if kw in name.lower():
+                if kw in name_lower:
                     is_virt = True
                     break
             
             # Exclude virtual graphics card drivers from details to prevent empty clutter cards
             if is_virt:
                 continue
-                
-            vram = g.get("AdapterRAM")
-            if vram is None or vram == 0:
+            
+            # --- Accurate VRAM resolution (priority order) ---
+            # 1. nvidia-smi (most accurate for NVIDIA GPUs, returns true physical VRAM)
+            # 2. Registry qwMemorySize (64-bit, works for all GPU vendors)
+            # 3. WMI AdapterRAM (32-bit signed, overflows for >4GB — last resort)
+            vram_bytes = None
+            
+            # Try nvidia-smi: exact name match first, then fuzzy substring match
+            for nv_name, nv_vram in nvidia_vram.items():
+                if nv_name == name_lower or nv_name in name_lower or name_lower in nv_name:
+                    vram_bytes = nv_vram
+                    break
+            
+            # Try registry: exact name match first, then fuzzy substring match
+            if vram_bytes is None:
+                for reg_name, reg_vram in registry_vram.items():
+                    if reg_name == name_lower or reg_name in name_lower or name_lower in reg_name:
+                        vram_bytes = reg_vram
+                        break
+            
+            # Fallback to WMI AdapterRAM (with 32-bit overflow correction)
+            if vram_bytes is None:
+                wmi_vram = g.get("AdapterRAM")
+                if wmi_vram is not None and wmi_vram != 0:
+                    if wmi_vram < 0:
+                        wmi_vram = wmi_vram + 2**32
+                    vram_bytes = wmi_vram
+            
+            if vram_bytes is None or vram_bytes == 0:
                 is_virtual = True
                 vram_str = "共享显存 / N/A"
             else:
                 is_virtual = False
-                if vram < 0:
-                    vram = vram + 2**32
-                vram_str = format_bytes(vram, use_gb_only=True)
+                vram_str = format_bytes(vram_bytes, use_gb_only=True)
                 
             res_h = g.get("CurrentHorizontalResolution")
             res_v = g.get("CurrentVerticalResolution")
@@ -1121,13 +1244,26 @@ class HardwareScanner:
         # Fallback to keep at least one GPU if everything gets filtered out (e.g. in cloud VMs)
         if not gpus and gpu_list:
             g = gpu_list[0]
-            vram = g.get("AdapterRAM")
-            vram_str = "N/A"
-            if vram:
-                if vram < 0: vram += 2**32
-                vram_str = format_bytes(vram, use_gb_only=True)
+            name = g.get("Name", "未知显卡").strip()
+            name_lower = name.lower()
+            vram_bytes = None
+            for nv_name, nv_vram in nvidia_vram.items():
+                if nv_name == name_lower or nv_name in name_lower or name_lower in nv_name:
+                    vram_bytes = nv_vram
+                    break
+            if vram_bytes is None:
+                for reg_name, reg_vram in registry_vram.items():
+                    if reg_name == name_lower or reg_name in name_lower or name_lower in reg_name:
+                        vram_bytes = reg_vram
+                        break
+            if vram_bytes is None:
+                wmi_vram = g.get("AdapterRAM")
+                if wmi_vram:
+                    if wmi_vram < 0: wmi_vram += 2**32
+                    vram_bytes = wmi_vram
+            vram_str = format_bytes(vram_bytes, use_gb_only=True) if vram_bytes else "N/A"
             gpus.append({
-                "name": g.get("Name", "未知显卡").strip(),
+                "name": name,
                 "vram": vram_str,
                 "driver": g.get("DriverVersion", "未知"),
                 "chipset": g.get("VideoProcessor", "未知"),
@@ -1529,7 +1665,7 @@ class HardwareScanner:
         try:
             # 1. Get profile list
             cmd = "netsh wlan show profiles"
-            res = subprocess.run(cmd, shell=True, capture_output=True)
+            res = subprocess.run(cmd, shell=True, capture_output=True, creationflags=0x08000000)
             
             # Try decoding with different encodings
             stdout_str = ""
@@ -1558,7 +1694,7 @@ class HardwareScanner:
             wifi_list = []
             for name in profiles:
                 cmd_pw = f'netsh wlan show profile name="{name}" key=clear'
-                res_pw = subprocess.run(cmd_pw, shell=True, capture_output=True)
+                res_pw = subprocess.run(cmd_pw, shell=True, capture_output=True, creationflags=0x08000000)
                 
                 stdout_pw = ""
                 for enc in ['gbk', 'utf-8', 'utf-16']:

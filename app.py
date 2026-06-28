@@ -21,18 +21,48 @@ from ui_components import (
     DiskPanel, MonitorPanel, SystemPanel, NetworkPanel, CameraPanel, ExportPanel
 )
 
+# ==============================================================================
+# DPI & Font Smoothing Setup (must be called before any tkinter window is created)
+# ==============================================================================
+
+def _enable_dpi_awareness():
+    """
+    Enables Per-Monitor DPI Awareness V2 for crisp rendering on high-DPI displays.
+    Must be called BEFORE creating any tkinter/CTk window.
+    """
+    try:
+        # Windows 10 1703+ : Per-Monitor DPI Awareness V2
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+    except (AttributeError, OSError):
+        try:
+            # Windows 8.1+ fallback: Per-Monitor DPI Aware
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            try:
+                # Windows Vista+ fallback: System DPI Aware
+                ctypes.windll.user32.SetProcessDPIAware()
+            except (AttributeError, OSError):
+                pass
+
+
 class App(ctk.CTk):
+    # Base dimensions (designed at 96 DPI / 100% scaling)
+    # CustomTkinter handles DPI scaling internally — do NOT manually scale these
+    BASE_WIDTH = 1040
+    BASE_HEIGHT = 680
+    
     def __init__(self):
         super().__init__()
         
         # Configure Window dimensions and Title
         self.title("极速硬件检测配置大师 (Hardware Spec Scanner)")
-        self.geometry("1040x680")
+        self.geometry(f"{self.BASE_WIDTH}x{self.BASE_HEIGHT}")
         self.configure(fg_color=BG_MAIN)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
-        # Center the window
-        self._center_window(1040, 680)
+        # Center the window on screen
+        self._center_window(self.BASE_WIDTH, self.BASE_HEIGHT)
         
         # Scanner configurations
         self.scanner = HardwareScanner()
@@ -62,10 +92,12 @@ class App(ctk.CTk):
         self.after(100, self._check_scan_status)
 
     def _center_window(self, width, height):
+        """Center the window on screen, accounting for DPI scaling."""
+        self.update_idletasks()  # Ensure geometry is finalized
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        x = (screen_width - width) // 2
-        y = (screen_height - height) // 2
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
 
     # ==============================================================================
@@ -77,7 +109,7 @@ class App(ctk.CTk):
         self.loading_frame.pack(fill="both", expand=True)
         
         # App Title / Brand
-        lbl_logo = ctk.CTkLabel(self.loading_frame, text="💻  Antigravity Diagnostic Master", font=("Segoe UI", 24, "bold"), text_color=COLOR_ACCENT)
+        lbl_logo = ctk.CTkLabel(self.loading_frame, text="💻  Antigravity Diagnostic Master", font=FONT_LOGO, text_color=COLOR_ACCENT)
         lbl_logo.pack(pady=(180, 10))
         
         # Description
@@ -219,7 +251,7 @@ class App(ctk.CTk):
             self.sidebar_buttons[key] = btn
             
         # Add a placeholder/footer at bottom of sidebar
-        lbl_footer = ctk.CTkLabel(sidebar, text="v1.0.0 Stable\nWindows System Tool", font=FONT_CAPTION, text_color="#5E5E6F")
+        lbl_footer = ctk.CTkLabel(sidebar, text="v1.0.1 Stable\nWindows System Tool", font=FONT_CAPTION, text_color="#5E5E6F")
         lbl_footer.pack(side="bottom", pady=20)
         
         # ----------------------------------------------------
@@ -978,6 +1010,9 @@ if __name__ == "__main__":
     # ── Auto-elevate: request admin rights before doing anything else ──
     if not _is_admin():
         _elevate_and_exit()
+
+    # Enable DPI awareness BEFORE creating any window
+    _enable_dpi_awareness()
 
     # Configure CustomTkinter default themes
     ctk.set_appearance_mode("dark")

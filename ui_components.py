@@ -9,45 +9,139 @@ import tkinter as tk
 import customtkinter as ctk
 from theme import *
 import ctypes
+from PIL import Image, ImageDraw, ImageTk, ImageFont
 
 # ==============================================================================
-# Custom Circular / Arc Gauge Widget
+# Custom Circular / Arc Gauge Widget (Anti-Aliased via Pillow Supersampling)
 # ==============================================================================
+
+def _hex_to_rgb(hex_color):
+    """Convert hex color string to (R, G, B) tuple."""
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
 
 class DashboardGauge(ctk.CTkFrame):
     """
-    A premium tachometer-style circular progress gauge using tkinter Canvas.
-    No dependencies, high performance, customizable color accents.
+    A premium tachometer-style circular progress gauge.
+    Uses Pillow supersampling (4x) for perfectly anti-aliased arc edges,
+    eliminating the jagged staircase artifacts of tkinter's native Canvas arcs.
     """
+    # Supersampling factor: draw at Nx resolution, then downscale with LANCZOS
+    _SS = 4
+    # Display dimensions
+    _CANVAS_W = 130
+    _CANVAS_H = 115
+    # Arc geometry (in display coords)
+    _ARC_BOX = (20, 20, 110, 110)  # bounding box for the arc
+    _ARC_WIDTH = 10                 # stroke width
+    _CENTER = (65, 65)              # center of arc
+    
     def __init__(self, parent, title, color, **kwargs):
         super().__init__(parent, fg_color=BG_CARD, corner_radius=CORNER_RADIUS, border_width=BORDER_WIDTH, border_color=BORDER_COLOR, **kwargs)
-        self.title = title
-        self.color = color
+        self._title_text = title
+        self._color = color
+        self._color_rgb = _hex_to_rgb(color)
+        self._bg_rgb = _hex_to_rgb(BG_CARD)
+        self._track_rgb = _hex_to_rgb("#2A2A38")
+        self._current_value = 0.0
         
         # Title Label
         self.label = ctk.CTkLabel(self, text=title, font=FONT_SUBTITLE, text_color=TEXT_SECONDARY)
         self.label.pack(pady=(12, 4))
         
-        # Drawing Canvas
-        # Center: 65, 65. Radius: 45. Box: (20, 20, 110, 110)
-        self.canvas = tk.Canvas(self, width=130, height=115, bg=BG_CARD, highlightthickness=0)
+        # Drawing Canvas (transparent background, we'll render everything via Pillow)
+        self.canvas = tk.Canvas(self, width=self._CANVAS_W, height=self._CANVAS_H,
+                                bg=BG_CARD, highlightthickness=0)
         self.canvas.pack(pady=(0, 10))
         
-        # Background track arc (start at 225 deg, wrap -270 deg clockwise)
-        self.canvas.create_arc(20, 20, 110, 110, start=225, extent=-270, style="arc", width=10, outline="#2A2A38")
+        # Keep a reference to the PhotoImage to prevent garbage collection
+        self._photo = None
+        self._canvas_img = self.canvas.create_image(0, 0, anchor="nw")
         
-        # Value arc (initially 0 extent)
-        self.val_arc = self.canvas.create_arc(20, 20, 110, 110, start=225, extent=0, style="arc", width=10, outline=color)
+        # Initial render
+        self._render(0.0)
+
+    def _render(self, value):
+        """Render the gauge at the given value (0-100) using Pillow supersampling."""
+        ss = self._SS
+        w, h = self._CANVAS_W * ss, self._CANVAS_H * ss
         
-        # Center percentage text
-        self.val_text = self.canvas.create_text(65, 65, text="0%", fill=TEXT_PRIMARY, font=("Segoe UI", 20, "bold"))
+        # Create RGBA image at supersampled resolution
+        img = Image.new("RGBA", (w, h), (*self._bg_rgb, 255))
+        draw = ImageDraw.Draw(img)
+        
+        # Scale arc geometry
+        x0, y0, x1, y1 = [c * ss for c in self._ARC_BOX]
+        arc_w = self._ARC_WIDTH * ss
+        
+        # 1. Draw background track arc (225° start, -270° extent = full sweep)
+        draw.arc(
+            [x0, y0, x1, y1],
+            start=-45,    # PIL uses different angle convention: 0=3 o'clock, CCW
+            end=225,      # 225 - (-270) mapped to PIL convention
+            fill=(*self._track_rgb, 255),
+            width=arc_w
+        )
+        
+        # 2. Draw value arc
+        val = max(0.0, min(100.0, float(value)))
+        if val > 0.1:  # Don't draw for near-zero to avoid rendering artifacts
+            # Map value to arc sweep:
+            # At 0%: no arc. At 100%: full 270° sweep
+            # Start angle in PIL: 225° (7 o'clock position), sweep clockwise
+            # PIL angles: 0° = 3 o'clock, counter-clockwise positive
+            # We want start at 225° (PIL), sweeping clockwise = decreasing angle
+            sweep_deg = (val / 100.0) * 270.0
+            start_angle_pil = 225.0  # Start at 7 o'clock
+            end_angle_pil = start_angle_pil - sweep_deg
+            
+            draw.arc(
+                [x0, y0, x1, y1],
+                start=end_angle_pil,
+                end=start_angle_pil,
+                fill=(*self._color_rgb, 255),
+                width=arc_w
+            )
+        
+        # 3. Draw center text
+        text = f"{int(val)}%"
+        cx, cy = self._CENTER[0] * ss, self._CENTER[1] * ss
+        # Use a scaled font size for supersampled rendering
+        font_size = FONT_GAUGE_VALUE[1] * ss
+        try:
+            font = ImageFont.truetype("msyhbd.ttc", font_size)  # Microsoft YaHei Bold
+        except (OSError, IOError):
+            try:
+                font = ImageFont.truetype("msyh.ttc", font_size)
+            except (OSError, IOError):
+                try:
+                    font = ImageFont.truetype("segoeui.ttf", font_size)
+                except (OSError, IOError):
+                    font = ImageFont.load_default()
+        
+        text_rgb = _hex_to_rgb(TEXT_PRIMARY)
+        # Get text bounding box for centering
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        tx = cx - tw // 2
+        ty = cy - th // 2 - bbox[1]  # Compensate for font ascent offset
+        draw.text((tx, ty), text, fill=(*text_rgb, 255), font=font)
+        
+        # 4. Downscale with LANCZOS (high-quality anti-aliasing)
+        img_final = img.resize((self._CANVAS_W, self._CANVAS_H), Image.LANCZOS)
+        
+        # Convert to PhotoImage and display
+        self._photo = ImageTk.PhotoImage(img_final)
+        self.canvas.itemconfig(self._canvas_img, image=self._photo)
 
     def set_value(self, value):
         val = max(0.0, min(100.0, float(value)))
-        # Map 0-100 to 0 to -270 degrees extent
-        extent = (val / 100.0) * -270
-        self.canvas.itemconfig(self.val_arc, extent=extent)
-        self.canvas.itemconfig(self.val_text, text=f"{int(val)}%")
+        if abs(val - self._current_value) < 0.5:
+            return  # Skip re-render if value hasn't meaningfully changed
+        self._current_value = val
+        self._render(val)
 
 # ==============================================================================
 # Custom Key-Value Data Display Row
