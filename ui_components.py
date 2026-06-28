@@ -668,10 +668,25 @@ class NetworkPanel(ctk.CTkScrollableFrame):
             
             # Header status indicator color
             is_up = adapter.get("status") == "已连接"
+            is_virtual = adapter.get("is_virtual", False)
             status_color = COLOR_SUCCESS if is_up else TEXT_SECONDARY
             
-            lbl_name = ctk.CTkLabel(card, text=adapter.get("name"), font=FONT_SUBTITLE, text_color=COLOR_ACCENT, anchor="w")
-            lbl_name.pack(fill="x", padx=15, pady=(10, 2))
+            header_frame = ctk.CTkFrame(card, fg_color="transparent")
+            header_frame.pack(fill="x", padx=15, pady=(10, 2))
+            
+            lbl_name = ctk.CTkLabel(header_frame, text=adapter.get("name"), font=FONT_SUBTITLE, text_color=COLOR_ACCENT, anchor="w")
+            lbl_name.pack(side="left")
+            
+            if is_virtual:
+                lbl_tag = ctk.CTkLabel(
+                    header_frame,
+                    text=" 虚拟网卡 ",
+                    font=FONT_CAPTION,
+                    text_color="#1a1a2e",
+                    fg_color="#5555AA",
+                    corner_radius=4
+                )
+                lbl_tag.pack(side="left", padx=(8, 0))
             
             lbl_desc = ctk.CTkLabel(card, text=adapter.get("desc"), font=FONT_CAPTION, text_color=TEXT_SECONDARY, anchor="w")
             lbl_desc.pack(fill="x", padx=15, pady=(0, 8))
@@ -890,24 +905,89 @@ class CameraPanel(ctk.CTkScrollableFrame):
             lbl_none = ctk.CTkLabel(self, text="⚠️ 未检测到任何已连接的活动摄像头设备", font=FONT_SUBTITLE, text_color=TEXT_SECONDARY)
             lbl_none.pack(pady=40)
             return
-            
+
+        # ── Summary stats bar ──────────────────────────────────────────
+        type_counts = {"builtin": 0, "external": 0, "virtual": 0, "unknown": 0}
+        for cam in cameras:
+            key = cam.get("camera_type", {}).get("type_key", "unknown")
+            type_counts[key] = type_counts.get(key, 0) + 1
+
+        summary_frame = ctk.CTkFrame(self, fg_color="#181822", corner_radius=8, border_width=1, border_color="#2D2D3D")
+        summary_frame.pack(fill="x", padx=10, pady=(0, 12))
+
+        summary_data = [
+            ("💻 内置摄像头", type_counts["builtin"],  "#0EA5E9"),
+            ("📷 外置摄像头", type_counts["external"], "#10B981"),
+            ("🖥️ 虚拟摄像头", type_counts["virtual"],  "#7C3AED"),
+            ("📸 类型未知",   type_counts["unknown"],  "#6B7280"),
+        ]
+        for col_idx, (label, count, color) in enumerate(summary_data):
+            cell = ctk.CTkFrame(summary_frame, fg_color="transparent")
+            cell.pack(side="left", expand=True, padx=12, pady=10)
+            ctk.CTkLabel(cell, text=str(count), font=("Segoe UI", 22, "bold"), text_color=color).pack()
+            ctk.CTkLabel(cell, text=label, font=FONT_CAPTION, text_color=TEXT_SECONDARY).pack()
+
+        # ── Per-camera cards ──────────────────────────────────────────
         for idx, cam in enumerate(cameras):
-            card = ctk.CTkFrame(self, fg_color="#1D1D2B", corner_radius=8, border_width=1, border_color="#2D2D3D")
+            cam_type = cam.get("camera_type", {})
+            type_key   = cam_type.get("type_key",   "unknown")
+            type_label = cam_type.get("type_label",  "摄像头 (类型未知)")
+            type_icon  = cam_type.get("type_icon",   "📸")
+            type_color = cam_type.get("type_color",  "#6B7280")
+            confidence = cam_type.get("confidence",  "低")
+
+            # Card background slightly different for virtual cams
+            card_bg = "#181822" if type_key == "virtual" else "#1D1D2B"
+            card = ctk.CTkFrame(self, fg_color=card_bg, corner_radius=8, border_width=1, border_color="#2D2D3D")
             card.pack(fill="x", padx=10, pady=6)
-            
-            lbl_header = ctk.CTkLabel(card, text=f"摄像头 {idx+1}: {cam.get('name')}", font=FONT_SUBTITLE, text_color=COLOR_ACCENT, anchor="w")
-            lbl_header.pack(fill="x", padx=15, pady=(10, 5))
-            
+
+            # ── Header row: camera name + type badge ──────────────────
+            header_frame = ctk.CTkFrame(card, fg_color="transparent")
+            header_frame.pack(fill="x", padx=15, pady=(12, 2))
+
+            lbl_header = ctk.CTkLabel(
+                header_frame,
+                text=f"摄像头 {idx+1}: {cam.get('name')}",
+                font=FONT_SUBTITLE, text_color=COLOR_ACCENT, anchor="w"
+            )
+            lbl_header.pack(side="left")
+
+            # Type badge (colored pill label)
+            badge_frame = ctk.CTkFrame(header_frame, fg_color=type_color, corner_radius=10)
+            badge_frame.pack(side="left", padx=(10, 0))
+            ctk.CTkLabel(
+                badge_frame,
+                text=f" {type_icon} {type_label} ",
+                font=FONT_CAPTION,
+                text_color="#FFFFFF"
+            ).pack(padx=4, pady=2)
+
+            # Confidence sub-label
+            conf_color_map = {"高": COLOR_SUCCESS, "中": "#FFA000", "低": TEXT_SECONDARY}
+            conf_color = conf_color_map.get(confidence, TEXT_SECONDARY)
+            lbl_conf = ctk.CTkLabel(
+                header_frame,
+                text=f"识别置信度: {confidence}",
+                font=FONT_CAPTION,
+                text_color=conf_color
+            )
+            lbl_conf.pack(side="right")
+
+            # ── Detail rows ──────────────────────────────────────────
             rows = [
-                ("制造商 (Manufacturer)", cam.get("manufacturer")),
-                ("设备在位状态 (Present)", cam.get("present")),
-                ("工作运行状态 (Status)", cam.get("status")),
-                ("系统设备标识 (Device ID)", cam.get("device_id")),
-                ("硬件 ID (Hardware ID)", cam.get("hardware_id")),
+                ("摄像头类型 (Type)",           f"{type_icon} {type_label}"),
+                ("制造商 (Manufacturer)",       cam.get("manufacturer")),
+                ("设备在位状态 (Present)",       cam.get("present")),
+                ("工作运行状态 (Status)",        cam.get("status")),
+                ("系统设备标识 (Device ID)",     cam.get("device_id")),
+                ("硬件 ID (Hardware ID)",        cam.get("hardware_id")),
             ]
             for r_idx, r in enumerate(rows):
                 row = InfoRow(card, r[0], r[1] or "未知", is_alternate=(r_idx % 2 == 1))
-                if r[0].startswith("工作运行状态") and "正常" in str(r[1]):
+                # Highlight type row with badge color
+                if r[0].startswith("摄像头类型"):
+                    row.val.configure(text_color=type_color)
+                elif r[0].startswith("工作运行状态") and "正常" in str(r[1]):
                     row.val.configure(text_color=COLOR_SUCCESS)
                 elif r[0].startswith("设备在位状态") and "启用" in str(r[1]):
                     row.val.configure(text_color=COLOR_ACCENT)
@@ -953,6 +1033,21 @@ class ExportPanel(ctk.CTkFrame):
             self.chk_vars[key] = var
             chk = ctk.CTkCheckBox(chk_frame, text=text, variable=var, font=FONT_BODY, fg_color=COLOR_SECONDARY, border_color=TEXT_SECONDARY)
             chk.pack(anchor="w", pady=4)
+
+        # Virtual NIC sub-option (default unchecked)
+        sub_frame = ctk.CTkFrame(chk_frame, fg_color="transparent")
+        sub_frame.pack(anchor="w", padx=(20, 0), pady=(2, 8))
+        
+        self.include_virtual_var = ctk.BooleanVar(value=False)
+        chk_virtual = ctk.CTkCheckBox(
+            sub_frame,
+            text="包含虚拟网卡（默认仅导出硬件网卡）",
+            variable=self.include_virtual_var,
+            font=FONT_CAPTION,
+            fg_color=COLOR_SECONDARY,
+            border_color=TEXT_SECONDARY
+        )
+        chk_virtual.pack(anchor="w")
             
         # Export Actions
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -970,7 +1065,7 @@ class ExportPanel(ctk.CTkFrame):
         return [key for key, var in self.chk_vars.items() if var.get()]
 
     def _export_html(self):
-        self.export_html_cb(self._get_active_keys(), self.btn_html)
+        self.export_html_cb(self._get_active_keys(), self.btn_html, self.include_virtual_var.get())
 
     def _export_md(self):
-        self.export_md_cb(self._get_active_keys(), self.btn_md)
+        self.export_md_cb(self._get_active_keys(), self.btn_md, self.include_virtual_var.get())

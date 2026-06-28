@@ -512,6 +512,210 @@ def get_monitor_brand_zh(code):
     return brand_map.get(code, f"其他品牌 ({code})")
 
 
+def classify_camera_type(name: str, device_id: str, manufacturer: str) -> dict:
+    """
+    Automatically classifies a camera device into one of three categories:
+      - 内置摄像头 (Built-in / Integrated)
+      - 外置摄像头 (External / USB)
+      - 虚拟摄像头 (Virtual / Software)
+    based on keyword heuristics in device name, DeviceID, and manufacturer strings.
+
+    Returns a dict:
+      {
+        "type_label": str,          # e.g. "内置摄像头"
+        "type_key": str,            # "builtin" | "external" | "virtual"
+        "type_icon": str,           # emoji icon for display
+        "type_color": str,          # CSS/hex color for badge
+        "confidence": str,          # "高" | "中" | "低"
+      }
+    """
+    name_lc = (name or "").lower()
+    devid_lc = (device_id or "").lower()
+    mfr_lc = (manufacturer or "").lower()
+    combined = f"{name_lc} {devid_lc} {mfr_lc}"
+
+    # ----------------------------------------------------------------
+    # 1. Virtual / Software camera keywords (highest priority)
+    # ----------------------------------------------------------------
+    virtual_keywords = [
+        # Remote desktop / screen capture virtual cams
+        "virtual", "virtualcam", "virtual cam",
+        "obs", "obs-camera", "obs virtual",
+        "manycam", "reincubate", "splitcam", "xsplit",
+        "snap camera", "snapcam", "mmhmm",
+        "droidcam", "iriun", "camo",
+        "luts camera", "luts",
+        "ndi", "ndi virtual",
+        "youcam", "cyberlink",
+        "vmware", "virtualbox", "hyper-v",
+        "screen capture", "screencapture",
+        "mirror", "mirroring",
+        "software", "filter", "e2esoftware",
+        "todesk", "anydesk", "teamviewer",
+        "parsec", "moonlight",
+        "geforce experience",
+        "fake",
+        # Windows built-in virtual cam interface
+        "mediafoundation", "kscategory_video_camera",
+        # Chinese virtual cam software
+        "虚拟", "直播伴侣", "美颜",
+    ]
+    for kw in virtual_keywords:
+        if kw in combined:
+            return {
+                "type_label": "虚拟摄像头",
+                "type_key":   "virtual",
+                "type_icon":  "🖥️",
+                "type_color": "#7C3AED",
+                "confidence": "高",
+            }
+
+    # Also check DeviceID bus prefix — virtual devices often use ROOT\ or SW\
+    if devid_lc.startswith("root\\") or devid_lc.startswith("sw\\"):
+        return {
+            "type_label": "虚拟摄像头",
+            "type_key":   "virtual",
+            "type_icon":  "🖥️",
+            "type_color": "#7C3AED",
+            "confidence": "中",
+        }
+
+    # ----------------------------------------------------------------
+    # 2. Built-in / Integrated camera keywords
+    # ----------------------------------------------------------------
+    builtin_keywords = [
+        # Generic built-in labels
+        "integrated", "built-in", "builtin", "internal",
+        "front camera", "front cam",
+        "rear camera", "rear cam",
+        "ir camera", "infrared camera", "ir sensor",
+        "facial recognition", "face recognition", "face cam",
+        "hello", "windows hello",
+        "depth camera", "depth sensor",
+        "tof sensor", "tof camera",
+        "lidar", "structured light",
+
+        # --- 新增：典型内置摄像头驱动/产品名称 ---
+        # 绝大多数笔记本内置摄像头在 Windows 下的驱动名含这些字符串
+        "hd uvc", "uvc camera", "uvc webcam", "uvc web cam",
+        "hd webcam", "hd camera",
+        "usb2.0 hd", "usb2.0 camera", "usb2.0 webcam",
+        "720p", "1080p",                    # 分辨率标识常见于内置摄像头驱动名
+        "wide vision hd",
+        "ez webcam", "ez camera",
+
+        # Laptop OEM integrated cams
+        "hp hd camera", "hp wide vision", "hp truevision",
+        "hp ir camera",
+        "dell webcam", "dell integrated",
+        "lenovo ez webcam", "lenovo ez", "lenovo integrated",
+        "asus webcam", "asus laptop", "asus built",
+        "thinkpad camera", "thinkpad ir", "thinkpad",
+        "ideapad", "yoga camera",
+        "surface camera", "surface front", "surface rear",
+        "microsoft surface",
+        "apple facetime", "facetime",
+        "intel realsense",
+        "xiaomi camera", "huawei camera",
+        "acer crystal eye", "acer",
+        "toshiba web camera",
+        "sony vaio",
+
+        # Manufacturer-specific chips used in built-in cams
+        "omnivision", "ov2680", "ov5670", "ov8856", "ov9734",
+        "lt6911", "lt9611",
+        "imx", "imx208", "imx219", "imx258",
+        "chicony", "chicony electronics",
+        "azurewave", "syntek",
+        "bison", "bison electronics",
+        "realtek integrated", "realtek semiconductor",
+        "sunplus innovation",
+        "quanta storage",
+        "liteon technology",
+
+        # Chinese internal keywords
+        "内置", "前置", "后置", "集成摄像",
+    ]
+    for kw in builtin_keywords:
+        if kw in combined:
+            return {
+                "type_label": "内置摄像头",
+                "type_key":   "builtin",
+                "type_icon":  "💻",
+                "type_color": "#0EA5E9",
+                "confidence": "高",
+            }
+
+    # DeviceID bus prefix heuristics for built-in cams:
+    # ACPI\, PCI\, MIPI\, I2C\ are typical for soldered-on cameras
+    for prefix in ("acpi\\", "pci\\", "mipi\\", "i2c\\", "hid\\"):
+        if devid_lc.startswith(prefix):
+            return {
+                "type_label": "内置摄像头",
+                "type_key":   "builtin",
+                "type_icon":  "💻",
+                "type_color": "#0EA5E9",
+                "confidence": "中",
+            }
+
+    # ----------------------------------------------------------------
+    # 3. External / USB camera keywords
+    # ----------------------------------------------------------------
+    # ⚠️  注意：不要在此列表放 "usb"、"webcam"、"摄像头" 等宽泛词——
+    #     笔记本内置摄像头驱动名经常含有这些字符串，会导致严重误判。
+    #     此处只放品牌/型号等具有强外置含义的词。
+    external_keywords = [
+        # 明确的外置品牌/系列
+        "logitech", "brio", "c920", "c922", "c925", "c930", "c270",
+        "c310", "c505", "c615", "c525", "c170", "c110",
+        "razer kiyo", "razer",
+        "elgato facecam", "elgato",
+        "anker powerconf",
+        "creative live! cam", "creative live cam",
+        "microsoft lifecam", "lifecam",
+        "avermedia", "magewell",
+        "nexigo", "obsbot",
+        "aukey pc-lm1", "adesso",
+        "hikvision", "dahua",
+        "realsense d415", "realsense d435",
+        "stream cam", "ring light cam",
+        # 中文外置品牌
+        "奥睿科", "外置",
+    ]
+    for kw in external_keywords:
+        if kw in combined:
+            return {
+                "type_label": "外置摄像头",
+                "type_key":   "external",
+                "type_icon":  "📷",
+                "type_color": "#10B981",
+                "confidence": "高",
+            }
+
+    # DeviceID USB\ 前缀：仅作低置信度兜底
+    # ⚠️  不能高置信度判断为外置！笔记本内置摄像头在 Windows 设备管理器里
+    #     同样走 USB 总线，DeviceID 同样以 USB\ 开头。
+    if devid_lc.startswith("usb\\"):
+        return {
+            "type_label": "外置摄像头 (USB)",
+            "type_key":   "external",
+            "type_icon":  "📷",
+            "type_color": "#10B981",
+            "confidence": "低",   # 改为低置信度，提示用户结果不确定
+        }
+
+    # ----------------------------------------------------------------
+    # 4. Fallback — cannot confidently classify
+    # ----------------------------------------------------------------
+    return {
+        "type_label": "摄像头 (类型未知)",
+        "type_key":   "unknown",
+        "type_icon":  "📸",
+        "type_color": "#6B7280",
+        "confidence": "低",
+    }
+
+
 def get_monitor_connection_zh(tech_code):
     try:
         tech = int(tech_code)
@@ -1067,7 +1271,7 @@ class HardwareScanner:
         $vol = Get-Volume | Where-Object { $_.DriveLetter -ne $null } | Select-Object DriveLetter, FileSystemLabel, FileSystem, Size, SizeRemaining
         $mb = Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer, Product, Version, SerialNumber
         $bios = Get-CimInstance Win32_BIOS | Select-Object Manufacturer, Version, ReleaseDate, SMBIOSBIOSVersion
-        $net = Get-NetAdapter | Select-Object Name, InterfaceDescription, MacAddress, LinkSpeed, Status
+        $net = Get-NetAdapter | Select-Object Name, InterfaceDescription, MacAddress, LinkSpeed, Status, InterfaceType, MediaType, DriverVersion, DriverProvider
         $bat = Get-CimInstance Win32_Battery | Select-Object DesignCapacity, FullChargeCapacity, EstimatedChargeRemaining, BatteryStatus
         $cam = Get-CimInstance Win32_PnPEntity | Where-Object { $_.Service -eq 'usbvideo' -or $_.ClassGuid -eq '{ca3e7b32-9fb6-45a3-9a9b-2e16b490ac10}' } | Select-Object Name, Manufacturer, DeviceID, Status, Present, ConfigManagerErrorCode
         
@@ -1505,6 +1709,31 @@ class HardwareScanner:
 
         # 7. Network parsing
         net_list = normalize_list(raw.get("network"))
+
+        def _is_virtual_adapter(adapter):
+            """Detect virtual / software adapters by name/description patterns."""
+            name = adapter.get("Name", "")
+            desc = adapter.get("InterfaceDescription", "")
+            combined = (name + " " + desc).lower()
+            # Common virtual / software adapter keywords
+            virtual_keywords = [
+                "virtual", "hyper-v", "hyperv", "veth",
+                "vmware", "virtualbox", "virtual machine",
+                "microsoft #2", "microsoft loopback",
+                "wan miniport", "ras async", "ras adapter",
+                "tunnel", "cisco", "juniper", "openconnect",
+                "tap", "tap-windows", "tun", "wireguard",
+                "softether", "npcap", "npf", "winpcap",
+                "checkpoint", "fortinet", "openvpn", "tap",
+                "ppp", "dialup", "broadband", "isatap",
+                "teredo", "6to4", "ipsec",
+                "qualcomm",  # some tethered adapters treated as software
+            ]
+            for kw in virtual_keywords:
+                if kw in combined:
+                    return True
+            return False
+
         adapters = []
         for adapter in net_list:
             status = adapter.get("Status", "Disconnected")
@@ -1514,8 +1743,13 @@ class HardwareScanner:
                 "desc": adapter.get("InterfaceDescription", "未知").strip(),
                 "mac": adapter.get("MacAddress", "N/A").strip(),
                 "speed": adapter.get("LinkSpeed", "N/A").strip(),
-                "status": status_zh
+                "status": status_zh,
+                "is_virtual": _is_virtual_adapter(adapter)
             })
+
+        # Sort: hardware adapters first, virtual/software adapters last
+        adapters.sort(key=lambda a: (a["is_virtual"], a["name"]))
+
         self.results["network"] = adapters
 
         # 8. Battery parsing
@@ -1564,13 +1798,21 @@ class HardwareScanner:
             hw_ids = c.get("HardwareID")
             hw_id_str = hw_ids[0] if (hw_ids and len(hw_ids) > 0) else "N/A"
             
+            # Camera type classification
+            cam_name = c.get("Name", "").strip()
+            cam_devid = c.get("DeviceID", "").strip()
+            cam_mfr = c.get("Manufacturer", "").strip()
+            cam_type_info = classify_camera_type(cam_name, cam_devid, cam_mfr)
+            
             cameras.append({
-                "name": c.get("Name", "未知摄像头").strip(),
-                "manufacturer": c.get("Manufacturer", "未知").strip(),
-                "device_id": c.get("DeviceID", "N/A").strip(),
+                "name": cam_name or "未知摄像头",
+                "manufacturer": cam_mfr or "未知",
+                "device_id": cam_devid or "N/A",
                 "status": status_zh,
                 "present": "在位/启用" if c.get("Present", True) else "离线/禁用",
-                "hardware_id": hw_id_str
+                "hardware_id": hw_id_str,
+                # --- New: camera type classification ---
+                "camera_type": cam_type_info,
             })
         self.results["camera"] = cameras
 

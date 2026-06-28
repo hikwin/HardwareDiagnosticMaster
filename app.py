@@ -125,6 +125,20 @@ class App(ctk.CTk):
         self.lbl_status = ctk.CTkLabel(self.loading_frame, text=self.scan_text, font=FONT_BODY, text_color=TEXT_PRIMARY)
         self.lbl_status.pack(pady=10)
 
+        # GitHub link at bottom of splash
+        btn_gh_splash = ctk.CTkButton(
+            self.loading_frame,
+            text="⭐  github.com/hikwin/HardwareDiagnosticMaster",
+            font=FONT_CAPTION,
+            fg_color="transparent",
+            text_color="#5E5E6F",
+            hover_color="#1E1E2E",
+            height=24,
+            corner_radius=6,
+            command=lambda: webbrowser.open("https://github.com/hikwin/HardwareDiagnosticMaster")
+        )
+        btn_gh_splash.pack(side="bottom", pady=(0, 18))
+
     def _run_background_scan(self):
         """Worker thread entry point."""
         try:
@@ -391,7 +405,7 @@ BIOS版本 : {d.get('system', {}).get('bios_version')}
     # Report Export Implementations
     # ==============================================================================
 
-    def export_html_report(self, keys, button_widget):
+    def export_html_report(self, keys, button_widget, include_virtual=False):
         d = self.hardware_data
         
         # Select save file path
@@ -711,10 +725,14 @@ BIOS版本 : {d.get('system', {}).get('bios_version')}
         <div class="section">
             <div class="section-title">网络适配网卡</div>
             <div class="grid">"""
-            for net in d.get("network", []):
+            net_list = d.get("network", [])
+            if not include_virtual:
+                net_list = [n for n in net_list if not n.get("is_virtual", False)]
+            for net in net_list:
+                virtual_tag = " <span style='background:#5555AA;color:#fff;padding:1px 6px;border-radius:4px;font-size:12px'>虚拟网卡</span>" if net.get("is_virtual") else ""
                 html += f"""
                 <div class="card">
-                    <div class="card-header">{net.get('name')}</div>
+                    <div class="card-header">{net.get('name')}{virtual_tag}</div>
                     <div class="row"><span class="key">网卡描述</span><span class="val">{net.get('desc')}</span></div>
                     <div class="row"><span class="key">连接状态</span><span class="val">{net.get('status')}</span></div>
                     <div class="row"><span class="key">连接速率</span><span class="val">{net.get('speed')}</span></div>
@@ -731,9 +749,16 @@ BIOS版本 : {d.get('system', {}).get('bios_version')}
             <div class="section-title">摄像头设备</div>
             <div class="grid">"""
             for cam in d.get("camera", []):
+                cam_type = cam.get("camera_type", {})
+                type_label = cam_type.get("type_label", "摄像头 (类型未知)")
+                type_icon  = cam_type.get("type_icon",  "📸")
+                type_color = cam_type.get("type_color", "#6B7280")
+                confidence = cam_type.get("confidence", "低")
                 html += f"""
                 <div class="card">
                     <div class="card-header">{cam.get('name')}</div>
+                    <div class="row"><span class="key">摄像头类型</span><span class="val" style="color:{type_color};font-weight:bold;">{type_icon} {type_label}</span></div>
+                    <div class="row"><span class="key">类型识别置信度</span><span class="val">{confidence}</span></div>
                     <div class="row"><span class="key">制造商</span><span class="val">{cam.get('manufacturer')}</span></div>
                     <div class="row"><span class="key">在位状态</span><span class="val">{cam.get('present')}</span></div>
                     <div class="row"><span class="key">运行状态</span><span class="val">{cam.get('status')}</span></div>
@@ -763,6 +788,11 @@ BIOS版本 : {d.get('system', {}).get('bios_version')}
         html += """
         <div class="footer">
             报告生成引擎: Antigravity Diagnostic Master (基于 WMI 物理层扫描) &copy; 2026
+            &nbsp;|&nbsp;
+            <a href="https://github.com/hikwin/HardwareDiagnosticMaster" target="_blank"
+               style="color:#7C9DFF;text-decoration:none;">
+               ⭐ GitHub: hikwin/HardwareDiagnosticMaster
+            </a>
         </div>
     </div>
 </body>
@@ -781,7 +811,7 @@ BIOS版本 : {d.get('system', {}).get('bios_version')}
         except Exception as e:
             messagebox.showerror("导出错误", f"保存报告文件时遇到异常:\n{e}")
 
-    def export_markdown_report(self, keys, button_widget):
+    def export_markdown_report(self, keys, button_widget, include_virtual=False):
         d = self.hardware_data
         
         # Select save file path
@@ -918,8 +948,12 @@ BIOS版本 : {d.get('system', {}).get('bios_version')}
         # 7. Network Block
         if "network" in keys:
             lines.append("## 网络适配适配器")
-            for net in d.get("network", []):
-                lines.append(f"### 网卡: {net.get('name')}")
+            net_list = d.get("network", [])
+            if not include_virtual:
+                net_list = [n for n in net_list if not n.get("is_virtual", False)]
+            for net in net_list:
+                virtual_tag = " `[虚拟网卡]`" if net.get("is_virtual") else ""
+                lines.append(f"### 网卡: {net.get('name')}{virtual_tag}")
                 lines.append(f"- **设备型号**: {net.get('desc')}")
                 lines.append(f"- **物理地址**: {net.get('mac')}")
                 lines.append(f"- **物理状态**: {net.get('status')} [速率: {net.get('speed')}]")
@@ -931,7 +965,12 @@ BIOS版本 : {d.get('system', {}).get('bios_version')}
         if "camera" in keys:
             lines.append("## 摄像头设备检测")
             for idx, cam in enumerate(d.get("camera", [])):
+                cam_type = cam.get("camera_type", {})
+                type_label = cam_type.get("type_label", "摄像头 (类型未知)")
+                type_icon  = cam_type.get("type_icon",  "📸")
+                confidence = cam_type.get("confidence", "低")
                 lines.append(f"### 摄像头 {idx+1}: {cam.get('name')}")
+                lines.append(f"- **摄像头类型**: {type_icon} {type_label}（识别置信度: {confidence}）")
                 lines.append(f"- **制造商**: {cam.get('manufacturer')}")
                 lines.append(f"- **设备在位状态**: {cam.get('present')}")
                 lines.append(f"- **工作运行状态**: {cam.get('status')}")
